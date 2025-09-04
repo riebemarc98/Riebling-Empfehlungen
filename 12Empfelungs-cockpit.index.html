@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mein Empfehlungscockpit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .claim-modal-bg {
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+    </style>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, addDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        const firebaseConfig = {
+  apiKey: "AIzaSyBriI9_18bFOdTUuOmcQBAAnubW4mMribs",
+  authDomain: "riebling-empfehlungscockpit.firebaseapp.com",
+  projectId: "riebling-empfehlungscockpit",
+  storageBucket: "riebling-empfehlungscockpit.firebasestorage.app",
+  messagingSenderId: "650662348147",
+  appId: "1:650662348147:web:4d01c9014d3fab97787106",
+  measurementId: "G-CZCZ17KST2"
+};
+
+        let db, auth;
+        let userId;
+
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+
+        const linkInput = document.getElementById('referralLink');
+        const linkButton = document.getElementById('generateLinkBtn');
+        const claimsList = document.getElementById('claimsList');
+        const claimedList = document.getElementById('claimedList');
+        const totalReferralsDisplay = document.getElementById('totalReferrals');
+        const unclaimedRewardsDisplay = document.getElementById('unclaimedRewards');
+        const linkStatusText = document.getElementById('linkStatusText');
+        const loginSection = document.getElementById('loginSection');
+        const appSection = document.getElementById('appSection');
+        const userIdDisplay = document.getElementById('userIdDisplay');
+        const claimModal = document.getElementById('claimModal');
+        const closeModalBtn = document.getElementById('closeModalBtn');
+        const openModalBtn = document.getElementById('openModalBtn');
+        const copyLinkBtn = document.getElementById('copyLinkBtn');
+        const modalMessage = document.getElementById('modalMessage');
+        const modalMessageText = document.getElementById('modalMessageText');
+        const claimRewardButton = document.getElementById('claimRewardButton');
+
+        function showMessage(message, colorClass) {
+            modalMessageText.textContent = message;
+            modalMessageText.className = `text-lg font-bold ${colorClass}`;
+            modalMessage.classList.remove('hidden');
+            setTimeout(() => {
+                modalMessage.classList.add('hidden');
+            }, 3000);
+        }
+
+        openModalBtn.addEventListener('click', () => {
+             claimModal.classList.remove('hidden');
+        });
+        closeModalBtn.addEventListener('click', () => {
+             claimModal.classList.add('hidden');
+        });
+
+        copyLinkBtn.addEventListener('click', () => {
+             navigator.clipboard.writeText(linkInput.value).then(() => {
+                showMessage('Link kopiert!', 'text-green-600');
+            }).catch(() => {
+                showMessage('Fehler beim Kopieren.', 'text-red-600');
+            });
+        });
+
+        function createRewardItem(referral, docId) {
+            const li = document.createElement('li');
+            li.className = 'flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-gray-100 rounded-lg shadow-inner mb-2';
+            const statusColor = referral.claimed ? 'text-green-600' : 'text-yellow-600';
+            const statusText = referral.claimed ? 'Eingelöst' : 'Verfügbar';
+
+            let date = new Date(0);
+            if (referral.timestamp && referral.timestamp.seconds) {
+                date.setSeconds(referral.timestamp.seconds);
+            } else if (referral.timestamp instanceof Date) {
+                date = referral.timestamp;
+            }
+
+            li.innerHTML = `
+                <div class="flex-1 mb-2 sm:mb-0">
+                    <p class="font-semibold text-gray-800">${referral.name}</p>
+                    <p class="text-sm text-gray-500">Datum: ${date.toLocaleDateString()}</p>
+                </div>
+                <div class="flex-1 text-left sm:text-center mb-2 sm:mb-0">
+                    <p class="font-bold text-gray-800">Prämie: ${referral.reward}</p>
+                </div>
+                <div class="flex-1 text-left sm:text-right">
+                    <span class="font-semibold ${statusColor}">${statusText}</span>
+                </div>
+            `;
+            li.dataset.docId = docId;
+            return li;
+        }
+
+        async function createReferralLink() {
+            if (!userId) {
+                showMessage('Fehler: Benutzer nicht angemeldet.', 'text-red-600');
+                return;
+            }
+
+            const referralLink = `${window.location.origin}/?ref=${userId}`;
+            const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_links', userId);
+
+            try {
+                await setDoc(userRef, {
+                    userId: userId,
+                    link: referralLink
+                }, { merge: true });
+
+                linkInput.value = referralLink;
+                linkStatusText.textContent = 'Ihr persönlicher Link wurde erstellt!';
+                showMessage('Link erfolgreich erstellt!', 'text-green-600');
+            } catch (e) {
+                showMessage('Fehler beim Erstellen des Links.', 'text-red-600');
+            }
+        }
+        
+        linkButton.addEventListener('click', createReferralLink);
+        
+        claimRewardButton.addEventListener('click', async () => {
+            const unclaimed = claimsList.querySelectorAll('li');
+            if (unclaimed.length === 0) {
+                 showMessage('Keine Prämien zum Einlösen.', 'text-red-600');
+                return;
+            }
+            try {
+                const batchPromises = Array.from(unclaimed).map(item => {
+                    const docId = item.dataset.docId;
+                    return updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'referrals', docId), { claimed: true });
+                });
+                await Promise.all(batchPromises);
+                showMessage('Alle Prämien wurden eingelöst!', 'text-green-600');
+            } catch (e) {
+                showMessage('Fehler beim Einlösen der Prämien.', 'text-red-600');
+            }
+        });
+
+        async function handleUrlParams() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const refId = urlParams.get('ref');
+
+            if (refId) {
+                if (refId === userId) {
+                    showMessage('Sie können Ihren eigenen Link nicht verwenden.', 'text-red-600');
+                    return;
+                }
+                
+                const referralCheckRef = doc(db, 'artifacts', appId, 'public', 'data', 'referrals', `${refId}-${userId}`);
+                const referralCheck = await getDoc(referralCheckRef);
+
+                if (referralCheck.exists()) {
+                    showMessage('Diese Empfehlung wurde bereits getrackt.', 'text-red-600');
+                    return;
+                }
+
+                const newReferral = {
+                    referrerId: refId,
+                    referredId: userId,
+                    timestamp: new Date(),
+                    reward: '50€ Gutschein', 
+                    name: `Neukunde von ${refId.substring(0, 8)}...`,
+                    claimed: false
+                };
+
+                await setDoc(referralCheckRef, newReferral);
+                showMessage('Vielen Dank für die Nutzung des Empfehlungslinks! Ihr Vorteil wird Ihrem Empfehler gutgeschrieben.', 'text-green-600');
+            }
+        }
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                loginSection.classList.add('hidden');
+                appSection.classList.remove('hidden');
+                userIdDisplay.textContent = `Ihre Nutzer-ID: ${userId}`;
+                handleUrlParams();
+
+                const userLinkRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_links', userId);
+                onSnapshot(userLinkRef, (docSnapshot) => {
+                    if (docSnapshot.exists() && docSnapshot.data().link) {
+                        linkInput.value = docSnapshot.data().link;
+                        linkStatusText.textContent = 'Ihr persönlicher Link wurde erstellt!';
+                    }
+                });
+
+                const publicReferralsRef = collection(db, 'artifacts', appId, 'public', 'data', 'referrals');
+                onSnapshot(publicReferralsRef, (snapshot) => {
+                    claimsList.innerHTML = '';
+                    claimedList.innerHTML = '';
+                    let unclaimedCount = 0;
+                    snapshot.forEach((doc) => {
+                        const data = doc.data();
+                        if (data.referrerId === userId) {
+                            const li = createRewardItem(data, doc.id);
+                            if (data.claimed) {
+                                claimedList.appendChild(li);
+                            } else {
+                                claimsList.appendChild(li);
+                                unclaimedCount++;
+                            }
+                        }
+                    });
+                    unclaimedRewardsDisplay.textContent = unclaimedCount;
+                    totalReferralsDisplay.textContent = claimsList.children.length + claimedList.children.length;
+                });
+            } else {
+                loginSection.classList.remove('hidden');
+                appSection.classList.add('hidden');
+                if (initialAuthToken) {
+                    signInWithCustomToken(auth, initialAuthToken).catch(() => {
+                         signInAnonymously(auth);
+                    });
+                } else {
+                    signInAnonymously(auth);
+                }
+            }
+        });
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center p-4">
+
+    <main class="w-full max-w-4xl bg-white p-8 rounded-2xl shadow-xl flex flex-col items-center">
+        
+        <section id="loginSection" class="w-full text-center">
+            <h1 class="text-3xl font-bold text-gray-900 mb-4">Lade...</h1>
+            <p class="text-gray-600">Bitte warten Sie, während wir Ihre Sitzung einrichten.</p>
+        </section>
+
+        <section id="appSection" class="w-full hidden">
+            <h1 class="text-3xl font-bold text-center text-gray-900 mb-2">Mein Empfehlungscockpit</h1>
+            <p class="text-center text-gray-600 mb-8">Erstellen und verwalten Sie Ihre Empfehlungslinks. Sehen Sie, wie viele Freunde Sie geworben haben und welche Prämien auf Sie warten.</p>
+            <p id="userIdDisplay" class="text-center text-xs text-gray-400 mb-4 break-all"></p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                <div class="bg-blue-50 p-6 rounded-lg text-center shadow">
+                    <p class="text-lg text-blue-800">Insgesamt geworbene Freunde:</p>
+                    <p id="totalReferrals" class="text-4xl font-bold text-blue-600 mt-2">0</p>
+                </div>
+                <div class="bg-blue-50 p-6 rounded-lg text-center shadow">
+                    <p class="text-lg text-blue-800">Verfügbare Prämien:</p>
+                    <p id="unclaimedRewards" class="text-4xl font-bold text-blue-600 mt-2">0</p>
+                </div>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-md border border-gray-200 mb-8">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Ihr persönlicher Empfehlungslink</h2>
+                <div class="flex flex-col sm:flex-row gap-4">
+                    <input type="text" id="referralLink" class="flex-grow p-3 rounded-lg border border-gray-300 bg-gray-50 text-gray-700" readonly placeholder="Klicken Sie auf 'Link erstellen'">
+                    <button id="generateLinkBtn" class="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors">Link erstellen</button>
+                    <button id="copyLinkBtn" class="bg-gray-300 text-gray-800 px-6 py-3 rounded-lg font-semibold hover:bg-gray-400 transition-colors">Link kopieren</button>
+                </div>
+                <p id="linkStatusText" class="text-sm mt-3 text-gray-500"></p>
+            </div>
+
+            <div class="bg-white p-6 rounded-xl shadow-md border border-gray-200">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">Ihre Prämien</h2>
+                    <button id="openModalBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-green-700 transition-colors text-sm">Prämien einlösen</button>
+                </div>
+                
+                <h3 class="text-lg font-semibold text-gray-600 mb-2">Verfügbar</h3>
+                <ul id="claimsList" class="mb-6"></ul>
+                
+                <h3 class="text-lg font-semibold text-gray-600 mb-2">Bereits eingelöst</h3>
+                <ul id="claimedList"></ul>
+            </div>
+        </section>
+
+    </main>
+    
+    <div id="claimModal" class="hidden fixed inset-0 flex items-center justify-center p-4 z-50 claim-modal-bg">
+        <div class="bg-white p-6 rounded-2xl shadow-xl w-full max-w-sm text-center">
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">Prämien einlösen</h2>
+            <p class="text-gray-600 mb-6">Möchten Sie alle verfügbaren Prämien jetzt einlösen? Die Prämien werden dann als "eingelöst" markiert.</p>
+            <div class="flex justify-center gap-4">
+                <button id="closeModalBtn" class="bg-gray-300 text-gray-800 px-6 py-2 rounded-lg font-semibold hover:bg-gray-400">Abbrechen</button>
+                <button id="claimRewardButton" class="bg-green-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-green-700">Bestätigen</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modalMessage" class="hidden fixed top-4 left-1/2 transform -translate-x-1/2 bg-white px-6 py-3 rounded-xl shadow-lg z-50">
+        <p id="modalMessageText"></p>
+    </div>
+
+</body>
+</html>
